@@ -256,11 +256,35 @@ function notify(
   $.ui.toast(text, { timeoutMs: 15_000 });
 }
 
+const JEV_COMMAND = 'jev-compact';
+
 export const register: Register = (on: On, options: PluginOptions) => {
   const configured = resolveHookConfig(options);
   let compacting = false;
+  // Jev работает только по /jev-compact и собственному автокомпакту плагина; обычный /compact идёт в core
+  let isJevRequested = false;
+
+  on('session.start', async ($, event, next) => {
+    await $.command.register({
+      name: JEV_COMMAND,
+      description: 'Compact with Jev: drop stale tool calls, keep messages verbatim',
+      argumentHint: '[instructions]',
+    });
+    return next(event);
+  });
+
+  on('command.run', { command: JEV_COMMAND }, async ($, event) => {
+    isJevRequested = true;
+    try {
+      const result = await $.session.compact(event.args ? { instructions: event.args } : {});
+      return { text: result.skip ? `jev-compact skipped: ${result.skip}` : 'jev-compact done' };
+    } finally {
+      isJevRequested = false;
+    }
+  });
 
   on('session.compact', async ($, event, next) => {
+    if (!isJevRequested) return next(event);
     try {
       const config = { ...configured, apiKey: await getApiKey($, configured) };
       const { result, messages } = await compactSession(event.messages, config, async (url, init) => {
@@ -295,6 +319,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
       const { context } = await $.session.usage();
       if ((context.percent ?? 0) < configured.compactAtPercent) return next(event);
       compacting = true;
+      isJevRequested = true;
       await $.session.compact();
     } catch (error) {
       $.ui.log(
@@ -302,6 +327,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
       );
     } finally {
       compacting = false;
+      isJevRequested = false;
     }
     return next(event);
   });
